@@ -117,7 +117,7 @@ def _extrair_codigo_nr(texto: str) -> str:
         return match.group(1).upper().replace(" ", "").replace("-", "")
     return ""
 
-def processar_planilha(funcionarios: list[dict], caminho_plano_acao: str, caminho_realizados: str, cnpj: str) -> str:
+def processar_planilha(funcionarios: list[dict], caminho_plano_acao: str, caminho_realizados: str, documento: str) -> str:
     df_func = pd.DataFrame(funcionarios)
     treinamentos_exigidos = _carregar_plano_de_acao(caminho_plano_acao)
     df_realizados = _carregar_treinamentos_realizados(caminho_realizados)
@@ -204,9 +204,9 @@ def processar_planilha(funcionarios: list[dict], caminho_plano_acao: str, caminh
         df_pendencias.sort_values(by=["_sort_key", "Treinamento Pendente"], inplace=True)
         df_pendencias.drop(columns=["_sort_key"], inplace=True)
 
-    cnpj_limpo = re.sub(r"\D", "", str(cnpj))
+    doc_limpo = re.sub(r"\D", "", str(documento))
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    nome_arquivo = f"Matriz_Treinamentos_{cnpj_limpo}_{timestamp}.xlsx"
+    nome_arquivo = f"Matriz_Treinamentos_{doc_limpo}_{timestamp}.xlsx"
     caminho_arquivo = os.path.join(_obter_pasta_downloads(), nome_arquivo)
 
     # Escrever em multiplas abas

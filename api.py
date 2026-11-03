@@ -1,13 +1,14 @@
 """
 api.py — Requisições à API SGG (endpoint /funcionario/).
 
-Busca todos os funcionários ativos de uma empresa identificada pelo CNPJ,
+Busca todos os funcionários ativos de uma empresa identificada pelo CNPJ ou CPF,
 lidando automaticamente com a paginação da API (máximo 100 por página).
 
 Referência da API: https://app.sgg.net.br/api/v3/doc/
 """
 
 import json
+import re
 import time
 from typing import Any
 
@@ -23,20 +24,41 @@ class APIError(Exception):
 
 def _fazer_requisicao(url: str, payload: dict) -> Any:
     """
-    Faz um GET autenticado com corpo JSON (padrão da API SGG).
+    Faz um GET autenticado com filtros e paginação via query params.
 
-    A API SGG aceita dados no corpo do GET (como data-raw) ou como
-    query params. Aqui usamos o corpo JSON.
+    Por causa das regras do CloudFront/WAF, o SGG bloqueia GET com body JSON. A
+    API aceita os mesmos parâmetros na URL, então enviamos tudo em `params`.
     """
     try:
+        params = payload
+        if isinstance(payload, dict) and "paginador" in payload:
+            paginador = payload["paginador"]
+            if isinstance(paginador, dict):
+                params = {
+                    "paginador": json.dumps(paginador),
+                    "id_empresa": payload.get("id_empresa", ""),
+                    "situacao": payload.get("situacao", ""),
+                }
+
         response = requests.get(
             url,
             headers=get_headers(),
-            data=json.dumps(payload),
+            params=params,
             timeout=60,
         )
         response.raise_for_status()
-        return response.json()
+        dados = response.json()
+
+        if isinstance(dados, dict):
+            status_code = dados.get("statusCode")
+            status_msg = dados.get("statusMsg") or dados.get("msg")
+            if status_code and status_code not in ("D000", "D001"):
+                raise APIError(
+                    f"Erro da API SGG ({status_code}):\n"
+                    f"{status_msg or 'Sem mensagem de detalhe'}"
+                )
+
+        return dados
 
     except requests.exceptions.ConnectionError:
         raise APIError(
@@ -57,6 +79,12 @@ def _fazer_requisicao(url: str, payload: dict) -> Any:
                 "Limite de requisições excedido (429).\n"
                 "Aguarde um minuto e tente novamente."
             )
+        if status == 403:
+            raise APIError(
+                "Acesso bloqueado pelo SGG/CloudFront (403).\n"
+                "A chamada foi ajustada para usar query params em vez de body JSON "
+                "em GET. Verifique a chave da API e tente novamente."
+            )
         body = ""
         try:
             body = e.response.json().get("msg", "")
@@ -70,48 +98,33 @@ def _fazer_requisicao(url: str, payload: dict) -> Any:
         raise APIError("A resposta da API não é um JSON válido.")
 
 
-def buscar_funcionarios(cnpj: str, callback_status=None) -> list[dict]:
+def buscar_funcionarios(documento: str, callback_status=None) -> list[dict]:
     """
-    Busca TODOS os funcionários ativos de uma empresa pelo CNPJ.
+    Busca TODOS os funcionários ativos de uma empresa pelo CNPJ ou CPF.
 
     Lida com a paginação automática (max 100 por página).
     O `callback_status` é chamado com uma mensagem de progresso (para a UI).
-
-    Retorna lista normalizada:
-    [
-        {
-            "id_funcionario": "123",
-            "nome": "João Silva",
-            "cpf": "987.654.321-10",
-            "cargo": "Eletricista",
-            "funcao": "Função",
-            "setor": "Obras",
-            "data_admissao": "2020-01-15",
-            "situacao": "Ativo",
-        },
-        ...
-    ]
     """
     url = get_url_funcionarios()
     todos_funcionarios = []
     pagina = 0
-    tamanho = 100  # Máximo permitido pela API
+    tamanho = 100
+
+    c = re.sub(r"\D", "", documento)
+    if len(c) == 14:
+        doc_formatado = f"{c[:2]}.{c[2:5]}.{c[5:8]}/{c[8:12]}-{c[12:14]}"
+    elif len(c) == 11:
+        doc_formatado = f"{c[:3]}.{c[3:6]}.{c[6:9]}-{c[9:11]}"
+    else:
+        doc_formatado = documento
 
     while True:
-        # Formatar CNPJ para o padrão exigido pela API (00.000.000/0000-00)
-        c = cnpj
-        if len(c) == 14 and "." not in c:
-            cnpj_formatado = f"{c[:2]}.{c[2:5]}.{c[5:8]}/{c[8:12]}-{c[12:14]}"
-        else:
-            cnpj_formatado = cnpj
-
         payload = {
             "paginador": {
                 "pagina": str(pagina),
                 "tamanho": str(tamanho),
             },
-            # Identificação da empresa pelo CNPJ formatado
-            "id_empresa": f"CNPJ_CPF_{cnpj_formatado}",
+            "id_empresa": f"CNPJ_CPF_{doc_formatado}",
             "situacao": "Ativo",
         }
 
@@ -120,16 +133,10 @@ def buscar_funcionarios(cnpj: str, callback_status=None) -> list[dict]:
 
         dados = _fazer_requisicao(url, payload)
 
-        # ── PARSE DA RESPOSTA ──
-        # A API retorna: {"resultado": [...], "temProximaPagina": true/false}
-        # ou {"resultado": {...}} para um único resultado
         resultado = dados.get("resultado", [])
-
-        # Se for um único objeto, colocar em lista
         if isinstance(resultado, dict):
             resultado = [resultado]
 
-        # Se veio vazio, pode ser erro D001 (retorno em branco) — tratamos como fim
         if not resultado:
             break
 
@@ -145,20 +152,18 @@ def buscar_funcionarios(cnpj: str, callback_status=None) -> list[dict]:
                 "situacao": func.get("situacao", "Ativo"),
             })
 
-        # Verifica se tem próxima página
         tem_proxima = dados.get("temProximaPagina", False)
         if not tem_proxima:
             break
 
         pagina += 1
-
-        # Pequena pausa para respeitar rate limit (60 req/min)
         time.sleep(0.5)
 
     if not todos_funcionarios:
         raise APIError(
-            f"Nenhum funcionário ativo encontrado para o CNPJ {cnpj}.\n"
-            "Verifique se o CNPJ está correto e se existem funcionários ativos no SGG."
+            f"Nenhum funcionário ativo encontrado para o CNPJ/CPF {doc_formatado}.\n"
+            "Verifique se o CNPJ/CPF está correto e se existem funcionários ativos no SGG."
         )
 
     return todos_funcionarios
+

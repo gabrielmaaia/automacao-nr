@@ -97,17 +97,17 @@ class MatrizApp(ctk.CTk):
 
         ctk.CTkFrame(self.card, height=1, fg_color=COR_BORDA).pack(fill="x", padx=28, pady=(0, 16))
 
-        # ── SEÇÃO 1: CNPJ ──
-        self._label_secao("① CNPJ da Empresa")
+        # ── SEÇÃO 1: CNPJ / CPF ──
+        self._label_secao("① CNPJ ou CPF da Empresa")
         self.entry_cnpj = ctk.CTkEntry(
-            self.card, placeholder_text="00.000.000/0000-00",
+            self.card, placeholder_text="CNPJ (14 dig) ou CPF (11 dig)",
             font=ctk.CTkFont(family="Consolas", size=15),
             height=44, corner_radius=10, border_width=1,
             border_color=COR_BORDA, fg_color=COR_INPUT_BG, text_color=COR_TEXTO,
         )
         self.entry_cnpj.pack(padx=36, fill="x", pady=(4, 2))
-        self.entry_cnpj.bind("<KeyRelease>", self._mascara_cnpj)
-        self._label_dica("Digite os 14 dígitos do CNPJ para buscar funcionários na API")
+        self.entry_cnpj.bind("<KeyRelease>", self._mascara_documento)
+        self._label_dica("Digite 14 dígitos (CNPJ) ou 11 dígitos (CPF)")
 
         # ── SEÇÃO 2: PLANO DE AÇÃO ──
         self._label_secao("② Planilha: Plano de Ação")
@@ -198,15 +198,30 @@ class MatrizApp(ctk.CTk):
             text_color=COR_TEXTO_SECUNDARIO, anchor="w",
         ).pack(padx=40, anchor="w", pady=(0, 6))
 
-    def _mascara_cnpj(self, event=None):
+    def _mascara_documento(self, event=None):
         texto = self.entry_cnpj.get()
         apenas_digitos = re.sub(r"\D", "", texto)[:14]
+        
         formatado = ""
-        for i, d in enumerate(apenas_digitos):
-            if i == 2 or i == 5: formatado += "."
-            elif i == 8: formatado += "/"
-            elif i == 12: formatado += "-"
-            formatado += d
+        if len(apenas_digitos) <= 11:
+            # Formato CPF (000.000.000-00)
+            for i, d in enumerate(apenas_digitos):
+                if i in (3, 6):
+                    formatado += "."
+                elif i == 9:
+                    formatado += "-"
+                formatado += d
+        else:
+            # Formato CNPJ (00.000.000/0000-00)
+            for i, d in enumerate(apenas_digitos):
+                if i in (2, 5):
+                    formatado += "."
+                elif i == 8:
+                    formatado += "/"
+                elif i == 12:
+                    formatado += "-"
+                formatado += d
+
         self.entry_cnpj.delete(0, "end")
         self.entry_cnpj.insert(0, formatado)
 
@@ -228,16 +243,16 @@ class MatrizApp(ctk.CTk):
             self._caminho_realizados = caminho
             self.lbl_realizados.configure(text=f"  ✅ {os.path.basename(caminho)}", text_color=COR_SUCESSO)
 
-    def _extrair_cnpj(self) -> str | None:
+    def _extrair_documento(self) -> str | None:
         digitos = re.sub(r"\D", "", self.entry_cnpj.get())
-        return digitos if len(digitos) == 14 else None
+        return digitos if len(digitos) in (11, 14) else None
 
     def _ao_clicar_gerar(self):
         if self._processando: return
 
-        cnpj = self._extrair_cnpj()
-        if not cnpj:
-            self._exibir_status("⚠️  CNPJ inválido. Digite os 14 dígitos.", cor=COR_ERRO)
+        documento = self._extrair_documento()
+        if not documento:
+            self._exibir_status("⚠️  CNPJ ou CPF inválido. Digite 11 (CPF) ou 14 dígitos (CNPJ).", cor=COR_ERRO)
             return
         if not self._caminho_plano_acao:
             self._exibir_status("⚠️  Selecione a planilha de Plano de Ação.", cor=COR_ERRO)
@@ -254,18 +269,18 @@ class MatrizApp(ctk.CTk):
         self.progress.pack(padx=36, fill="x", pady=(0, 8))
         self.progress.start()
 
-        threading.Thread(target=self._executar_pipeline, args=(cnpj,), daemon=True).start()
+        threading.Thread(target=self._executar_pipeline, args=(documento,), daemon=True).start()
 
-    def _executar_pipeline(self, cnpj: str):
+    def _executar_pipeline(self, documento: str):
         try:
             def status_cb(msg): self.after(0, self._exibir_status, msg, COR_TEXTO_SECUNDARIO)
             
-            funcionarios = buscar_funcionarios(cnpj, callback_status=status_cb)
+            funcionarios = buscar_funcionarios(documento, callback_status=status_cb)
             
             self.after(0, self._exibir_status, f"🔄  Cruzando {len(funcionarios)} funcionários com as planilhas...", COR_TEXTO_SECUNDARIO)
             
             caminho = processar_planilha(
-                funcionarios, self._caminho_plano_acao, self._caminho_realizados, cnpj
+                funcionarios, self._caminho_plano_acao, self._caminho_realizados, documento
             )
 
             self._caminho_arquivo_saida = caminho
